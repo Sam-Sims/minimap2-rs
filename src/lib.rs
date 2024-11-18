@@ -51,7 +51,7 @@ use std::num::NonZeroI32;
 use std::path::Path;
 
 use std::os::unix::ffi::OsStrExt;
-
+use std::sync::Arc;
 use libc::c_void;
 use minimap2_sys::*;
 
@@ -292,6 +292,14 @@ impl Default for ThreadLocalBuffer {
 /// Aligner::builder();
 /// ```
 
+
+pub struct MmIdx(*mut mm_idx_t);
+impl Drop for MmIdx {
+    fn drop(&mut self) {
+        unsafe { mm_idx_destroy(self.0) };
+    }
+}
+
 #[derive(Clone)]
 pub struct Aligner {
     /// Index options passed to minimap2 (mm_idxopt_t)
@@ -304,7 +312,7 @@ pub struct Aligner {
     pub threads: usize,
 
     /// Index created by minimap2
-    pub idx: Option<*mut mm_idx_t>,
+    pub idx: Option<Arc<MmIdx>>,
 
     /// Index reader created by minimap2
     pub idx_reader: Option<mm_idx_reader_t>,
@@ -658,7 +666,7 @@ impl Aligner {
             mm_idx_index_name(idx.assume_init());
         }
 
-        self.idx = Some(unsafe { idx.assume_init() });
+        self.idx = Some(Arc::new(MmIdx(unsafe { idx.assume_init() })));
 
         Ok(())
     }
@@ -765,7 +773,7 @@ impl Aligner {
             )
         });
 
-        self.idx = Some(unsafe { idx.assume_init() });
+        self.idx = Some(Arc::new(MmIdx(unsafe { idx.assume_init() })));
         self.mapopt.mid_occ = 1000;
 
         Ok(self)
@@ -823,7 +831,7 @@ impl Aligner {
 
             mm_reg = MaybeUninit::new(unsafe {
                 mm_map(
-                    self.idx.unwrap() as *const mm_idx_t,
+                    self.idx.as_ref().unwrap().0 as *const mm_idx_t,
                     seq.len() as i32,
                     seq.as_ptr() as *const ::std::os::raw::c_char,
                     &mut n_regs,
@@ -841,7 +849,7 @@ impl Aligner {
                     let reg: mm_reg1_t = *reg_ptr;
 
                     let contig: *mut ::std::os::raw::c_char =
-                        (*((*(self.idx.unwrap())).seq.offset(reg.rid as isize))).name;
+                        (*((*(self.idx.as_ref().unwrap().0)).seq.offset(reg.rid as isize))).name;
 
                     let is_primary = reg.parent == reg.id;
                     let is_supplementary = reg.sam_pri() == 0;
@@ -942,7 +950,7 @@ impl Aligner {
                                     km,
                                     &mut cs_string,
                                     &mut m_cs_string,
-                                    self.idx.unwrap() as *const mm_idx_t,
+                                    self.idx.as_ref().unwrap().0 as *const mm_idx_t,
                                     const_ptr,
                                     seq.as_ptr() as *const libc::c_char,
                                     true.into(),
@@ -961,7 +969,7 @@ impl Aligner {
                                     km,
                                     &mut cs_string,
                                     &mut m_cs_string,
-                                    self.idx.unwrap() as *const mm_idx_t,
+                                    self.idx.as_ref().unwrap().0 as *const mm_idx_t,
                                     const_ptr,
                                     seq.as_ptr() as *const libc::c_char,
                                 );
@@ -997,7 +1005,7 @@ impl Aligner {
                                 .unwrap()
                                 .to_string(),
                         ),
-                        target_len: (*((*(self.idx.unwrap())).seq.offset(reg.rid as isize))).len
+                        target_len: (*((*(self.idx.as_ref().unwrap().0)).seq.offset(reg.rid as isize))).len
                             as i32,
                         target_start: reg.rs,
                         target_end: reg.re,
@@ -1106,14 +1114,14 @@ mod send {
 / necessary?
 / TODO: Test for memory leaks
 */
-impl Drop for Aligner {
-    fn drop(&mut self) {
-        if self.idx.is_some() {
-            let idx = self.idx.take().unwrap();
-            unsafe { mm_idx_destroy(idx) };
-        }
-    }
-}
+// impl Drop for Aligner {
+//     fn drop(&mut self) {
+//         if self.idx.is_some() {
+//             let idx = self.idx.take().unwrap();
+//             unsafe { mm_idx_destroy(idx) };
+//         }
+//     }
+// }
 
 #[derive(PartialEq, Eq)]
 pub enum FileFormat {
